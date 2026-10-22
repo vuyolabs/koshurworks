@@ -1,0 +1,131 @@
+# Codemagic CI/CD configuration for KoshurWorks (Flutter).
+# Reference: https://docs.codemagic.io/yaml-quick-start/building-a-flutter-app/
+#
+# The app currently uses the placeholder id `com.example.koshurworks` and the
+# Android release build is signed with the debug key (see
+# android/app/build.gradle.kts), so these workflows produce test builds only.
+# Store signing and publishing steps are included below, commented out, ready to
+# enable once a keystore, Google Play service account and App Store Connect API
+# key have been added in Codemagic (Team settings > Code signing identities /
+# Integrations).
+
+definitions:
+  flutter_cache: &flutter_cache
+    cache_paths:
+      - $HOME/.pub-cache
+      - $HOME/.gradle/caches
+
+  triggers: &triggers
+    events:
+      - push
+      - pull_request
+    branch_patterns:
+      - pattern: 'main'
+        include: true
+        source: true
+    cancel_previous_builds: true
+
+  scripts:
+    - &get_packages
+      name: Get Flutter packages
+      script: flutter pub get
+    - &flutter_analyze
+      name: Static analysis
+      script: flutter analyze
+    - &flutter_test
+      name: Unit and widget tests
+      script: |
+        mkdir -p test-results
+        flutter test --machine > test-results/flutter.json
+      test_report: test-results/flutter.json
+
+workflows:
+  android-workflow:
+    name: Android Workflow
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    triggering: *triggers
+    cache: *flutter_cache
+    environment:
+      flutter: stable
+      # android_signing:
+      #   - keystore_reference      # reference name from Code signing identities
+      # groups:
+      #   - google_play             # holds GOOGLE_PLAY_SERVICE_ACCOUNT_CREDENTIALS
+      vars:
+        PACKAGE_NAME: "com.example.koshurworks"
+        GOOGLE_PLAY_TRACK: internal
+    scripts:
+      - name: Set up local.properties
+        script: echo "flutter.sdk=$HOME/programs/flutter" > "$CM_BUILD_DIR/android/local.properties"
+      - *get_packages
+      - *flutter_analyze
+      - *flutter_test
+      - name: Build APK
+        script: flutter build apk --release --build-number=$BUILD_NUMBER
+      - name: Build AAB
+        script: flutter build appbundle --release --build-number=$BUILD_NUMBER
+        # Once publishing to Google Play, derive the build number from the store instead:
+        # script: |
+        #   BUILD_NUMBER=$(($(google-play get-latest-build-number --package-name "$PACKAGE_NAME" --tracks="$GOOGLE_PLAY_TRACK") + 1))
+        #   flutter build appbundle --release --build-number=$BUILD_NUMBER
+    artifacts:
+      - build/**/outputs/**/*.apk
+      - build/**/outputs/**/*.aab
+      - build/**/outputs/**/mapping.txt
+      - flutter_drive.log
+    # publishing:
+    #   email:
+    #     recipients:
+    #       - you@example.com
+    #   google_play:
+    #     credentials: $GOOGLE_PLAY_SERVICE_ACCOUNT_CREDENTIALS
+    #     track: $GOOGLE_PLAY_TRACK
+    #     submit_as_draft: true
+
+  ios-workflow:
+    name: iOS Workflow
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    triggering: *triggers
+    cache:
+      cache_paths:
+        - $HOME/.pub-cache
+        - $HOME/Library/Caches/CocoaPods
+    # integrations:
+    #   app_store_connect: <App Store Connect API key name>
+    environment:
+      flutter: stable
+      xcode: latest
+      cocoapods: default
+      # ios_signing:
+      #   distribution_type: app_store
+      #   bundle_identifier: com.example.koshurworks
+      # vars:
+      #   APP_STORE_APPLE_ID: 1555555551
+    scripts:
+      - *get_packages
+      - *flutter_analyze
+      - *flutter_test
+      - name: Install pods
+        script: find . -name "Podfile" -execdir pod install \;
+      - name: Flutter build iOS (unsigned)
+        script: flutter build ios --release --no-codesign --build-number=$BUILD_NUMBER
+      # Replace the unsigned build above with these steps once signing is configured:
+      # - name: Set up code signing settings on Xcode project
+      #   script: xcode-project use-profiles
+      # - name: Flutter build ipa
+      #   script: |
+      #     flutter build ipa --release \
+      #       --build-number=$(($(app-store-connect get-latest-app-store-build-number "$APP_STORE_APPLE_ID") + 1)) \
+      #       --export-options-plist=/Users/builder/export_options.plist
+    artifacts:
+      - build/ios/iphoneos/*.app
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+      - flutter_drive.log
+    # publishing:
+    #   app_store_connect:
+    #     auth: integration
+    #     submit_to_testflight: true
+    #     submit_to_app_store: false
